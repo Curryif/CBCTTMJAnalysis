@@ -73,24 +73,3 @@ Do **not** commit patient scans, masks, segmentations, registration fields, scre
 ## License
 
 No open-source license has been selected yet. Until a license is added, assume standard copyright applies; do not treat the repository as granting permission to reuse or redistribute the code.
-
-## Publish this project to GitHub
-
-1. Create an empty repository on GitHub named `CBCTTMJAnalysis`. Do not initialize it with a second README or `.gitignore`.
-2. Extract this package and open a terminal in the folder containing this `README.md`.
-3. Review `git status` after `git add .` and confirm that no patient data, masks, deformation fields, credentials, or patient-specific HTML files are staged.
-4. Commit and push:
-
-```powershell
-git init
-git add .
-git status
-git commit -m "Initial commit: CBCT TMJ Analysis"
-git branch -M main
-git remote add origin https://github.com/YOUR_USERNAME/CBCTTMJAnalysis.git
-git push -u origin main
-```
-
-Replace `YOUR_USERNAME` with your GitHub username. If Git asks for an author identity, configure `git config --global user.name` and `git config --global user.email` first. Authenticate using Git Credential Manager or GitHub's supported sign-in flow; never commit a personal access token.
-
-No license has been selected in this repository. Until a license is added, standard copyright applies; do not assume others have permission to reuse or redistribute the code.
