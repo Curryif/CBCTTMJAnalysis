@@ -1,0 +1,16 @@
+name: Python syntax check
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  syntax:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Compile Python files (syntax only; no native dependencies imported)
+        run: python -m compileall -q CBCTTMJAnalysis.py CBCTTMJAnalysisLib verify_backend.py

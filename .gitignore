@@ -1,0 +1,50 @@
+# Python cache / build artifacts
+__pycache__/
+*.py[cod]
+*.pyd
+build/
+dist/
+*.egg-info/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+
+# Medical imaging data and derived patient data: do not commit to GitHub
+*.nii
+*.nii.gz
+*.nrrd
+*.mha
+*.mhd
+*.dcm
+*.dicom
+*.vti
+*.vtk
+*.vtp
+*.stl
+*.obj
+*.ply
+*.seg.nrrd
+
+# Generated visualization and registration outputs
+*_warped*
+*warp_field*
+*residual_elastic_field*
+*registration_summary.csv
+*visualization*.html
+*visualization*.png
+*_with_anatomy.html
+
+# Local environment files
+.env
+.env.*
+.venv/
+venv/
+conda-meta/

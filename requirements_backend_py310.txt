@@ -1,0 +1,14 @@
+# Windows x64 + external Conda Python 3.10 baseline
+# Install into the external Python environment selected in the Slicer module.
+# VTK is pinned to avoid the vtkSerializationManager DLL issue seen with VTK 9.7.1.
+antspyx==0.6.3
+SimpleITK==2.4.1
+nibabel==5.3.2
+numpy==1.26.4
+scipy==1.14.1
+pyvista==0.44.2
+vtk==9.3.1
+trame==3.6.5
+trame-vtk==2.8.10
+trame-vuetify==2.7.1
+trame-pyvista==0.2.1
