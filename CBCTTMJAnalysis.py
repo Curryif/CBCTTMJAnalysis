@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """CBCT TMJ Analysis: 3D Slicer Scripted Module."""
-import os, sys, csv, json, traceback
+import os, sys, csv, json, traceback, subprocess
 import numpy as np
 import vtk, qt, ctk, slicer
 from slicer.ScriptedLoadableModule import *
@@ -429,6 +429,128 @@ class CBCTTMJAnalysisWidget(ScriptedLoadableModuleWidget):
         self.startExternalProcess(pythonExe, args, "html_stage{}".format(int(stage)))
         return True
 
+    def exportDirectionalHtmlReports(self, vmax=None):
+        """Run the standalone PyVista exporter with the user's external Python.
+
+        Configure EXTERNAL_PYTHON below for the environment that has PyVista,
+        trame-pyvista, trame-vtk, and trame-vuetify installed. Keep
+        visualization_exporter.py beside this Slicer module file.
+        """
+        out_dir = os.path.abspath(self.outputDir)
+        os.makedirs(out_dir, exist_ok=True)
+
+        # IMPORTANT: this must point to the external environment, NOT slicer.util.pythonShell
+        # or sys.executable (which points to Slicer's own Python runtime).
+        external_python = self.pythonEdit.text.strip()
+        module_dir = os.path.dirname(os.path.abspath(__file__))
+        exporter_script = os.path.join(module_dir, "CBCTTMJAnalysisLib", "visualization_exporter.py")
+
+        expected = [
+            os.path.join(out_dir, "local_patch_LR_with_anatomy.html"),
+            os.path.join(out_dir, "local_patch_AP_with_anatomy.html"),
+            os.path.join(out_dir, "local_patch_SI_with_anatomy.html"),
+        ]
+
+        if not os.path.isfile(external_python):
+            self.log("[HTML EXPORT FAILED] External Python was not found: " + external_python)
+            self.log("Set External Python to your working Python 3.10 environment in the Slicer module.")
+            return []
+        if not os.path.isfile(exporter_script):
+            self.log("[HTML EXPORT FAILED] Exporter script was not found: " + exporter_script)
+            self.log("Place visualization_exporter.py in CBCTTMJAnalysisLib next to the Slicer module.")
+            return []
+
+        cmd = [
+            external_python, "-I", exporter_script,
+            "--stage", "3",
+            "--out", out_dir,
+            "--scale", str(float(self.deformationScale.value)),
+        ]
+        self.log("Starting external HTML exporter (isolated Python environment):")
+        self.log("  " + subprocess.list2cmdline(cmd))
+        try:
+            # Slicer sets Python-related environment variables and PATH entries
+            # for its own bundled Python 3.9. Inheriting those into the external
+            # Python 3.10 process can load Slicer's python39.dll and cause:
+            # "Module use of python39.dll conflicts with this version of Python".
+            # Build a clean environment for the child process.
+            child_env = os.environ.copy()
+            for key in (
+                "PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP",
+                "PYTHONUSERBASE", "PYTHONEXECUTABLE"
+            ):
+                child_env.pop(key, None)
+
+            conda_prefix = os.path.dirname(os.path.abspath(external_python))
+            conda_dirs = [
+                conda_prefix,
+                os.path.join(conda_prefix, "Scripts"),
+                os.path.join(conda_prefix, "Library", "bin"),
+                os.path.join(conda_prefix, "Library", "usr", "bin"),
+            ]
+
+            # Remove Slicer-specific PATH entries so Windows cannot resolve
+            # Python 3.9 DLLs from Slicer before the external Python 3.10 DLLs.
+            old_path_entries = child_env.get("PATH", "").split(os.pathsep)
+            filtered_path_entries = []
+            for entry in old_path_entries:
+                low = entry.lower()
+                if (
+                    "slicer" in low
+                    or "slicerapp" in low
+                    or "slicer.org" in low
+                ):
+                    continue
+                if entry and entry not in filtered_path_entries:
+                    filtered_path_entries.append(entry)
+
+            system_root = child_env.get("SystemRoot", r"C:\\Windows")
+            system_dirs = [
+                os.path.join(system_root, "System32"),
+                system_root,
+            ]
+            merged_path = []
+            for entry in conda_dirs + system_dirs + filtered_path_entries:
+                if entry and entry not in merged_path:
+                    merged_path.append(entry)
+            child_env["PATH"] = os.pathsep.join(merged_path)
+            child_env["PYTHONNOUSERSITE"] = "1"
+
+            self.log("[HTML] External Python: " + external_python)
+            self.log("[HTML] Conda prefix: " + conda_prefix)
+            self.log("[HTML] Removed inherited PYTHONHOME/PYTHONPATH and Slicer PATH entries.")
+
+            # Synchronous by design: when Step 3 returns, export has either
+            # completed or reported a concrete error. This can briefly pause UI.
+            result = subprocess.run(
+                cmd, cwd=out_dir, env=child_env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, universal_newlines=True,
+                errors="replace", timeout=300, check=False
+            )
+            if result.stdout:
+                for line in result.stdout.splitlines():
+                    self.log("[HTML] " + line)
+
+            missing = [p for p in expected if not os.path.isfile(p) or os.path.getsize(p) <= 0]
+            if result.returncode != 0 or missing:
+                self.log("[HTML EXPORT FAILED] return code={}".format(result.returncode))
+                for path in missing:
+                    self.log("[HTML EXPORT MISSING] " + path)
+                return []
+
+            for path in expected:
+                self.log("[HTML EXPORT SUCCESS] {} ({:,} bytes)".format(path, os.path.getsize(path)))
+            return expected
+        except subprocess.TimeoutExpired:
+            self.log("[HTML EXPORT FAILED] External exporter timed out after 300 seconds.")
+            return []
+        except Exception as e:
+            self.log("[HTML EXPORT FAILED] {}: {}".format(type(e).__name__, e))
+            self.log(traceback.format_exc())
+            return []
+
+
     def runStage2(self):
         maskNode = self.analysisMaskNode or self.t1MaskSelector.currentNode()
         if maskNode is None: raise ValueError("Select the T1 mask before Step 2.")
@@ -490,7 +612,7 @@ class CBCTTMJAnalysisWidget(ScriptedLoadableModuleWidget):
         self.log("STEP 2 COMPLETE: display contains only the T1 left/right four-region surfaces, sphenoid, and LR/AP/SI coordinate axes.")
         self.log("Full fossa and complete upper surfaces are saved as files but are not displayed in Step 2.")
         self.log("Click Step 3 to overlay displacement heatmaps and directionally deformed patches.")
-        self.startHtmlExport(2)
+        # self.startHtmlExport(2)
 
     def runStage3(self):
         if not self.stage2Ready or not self.sideData: raise RuntimeError("Run Step 2 first.")
@@ -524,15 +646,17 @@ class CBCTTMJAnalysisWidget(ScriptedLoadableModuleWidget):
         for side in ["left", "right"]:
             upper = self.sideData[side]["t1Upper"]
             points = vtk_to_numpy(upper.GetPoints().GetData()).astype(np.float64)
-            disp, valid, invInfo = self.logic.inverseDisplacement(points, self.fieldData, self.fieldAffine)
+            # Directly sample residual displacement at T1 surface vertices.
+            disp, valid = self.logic.sampleField(points, self.fieldData, self.fieldAffine)
+            valid &= np.all(np.isfinite(disp), axis=1)
             components = {k: disp @ self.axes[k] for k in ["LR", "AP", "SI"]}
-            prepared[side] = {"disp": disp, "valid": valid, "components": components, "inverseInfo": invInfo}
+            prepared[side] = {"disp": disp, "valid": valid, "components": components}
             for mode in ["LR", "AP", "SI"]: allScalars.append(components[mode][valid])
-            self.log("{} inverse-field valid ratio: {:.2f}% (iterations={}, converged={})".format(side.upper(), valid.mean()*100.0, invInfo["iterations"], invInfo["converged_to_tolerance"]))
+            self.log("{} DIRECT-field valid ratio: {:.2f}%".format(side.upper(), valid.mean()*100.0))
             if valid.mean() < 0.95: self.log("WARNING: low field valid ratio on {}. Check field geometry and vector convention.".format(side))
         vmax = self.logic.symmetricRange(allScalars)
         self.log("Shared LR/AP/SI heatmap range: +/- {:.4f} mm".format(vmax))
-        report = {"coordinate_system":"Slicer RAS", "field_vector_components":"RAS", "field_assumption":"T2-rigid -> T1; inverse field approximates T1 -> T2-rigid", "inverse_method":"fixed-point iteration x_(n+1)=y-u(x_n)", "normal_threshold":float(self.normalThreshold.value), "patch_display_scale":float(self.deformationScale.value), "patch_resolution":int(self.patchResolution.value), "shared_heatmap_range_mm":[-vmax,vmax], "axes":{k:np.asarray(self.axes[k]).tolist() for k in ["origin","LR","AP","SI"]}, "field_shape_IJK3":list(self.fieldData.shape), "field_affine_RAS":self.fieldAffine.tolist(), "sides":{}}
+        report = {"coordinate_system":"Slicer RAS", "field_vector_components":"RAS", "mapping":"direct only: P_mapped = P_T1 + u_res(P_T1)", "normal_threshold":float(self.normalThreshold.value), "patch_display_scale":float(self.deformationScale.value), "patch_resolution":int(self.patchResolution.value), "shared_heatmap_range_mm":[-vmax,vmax], "axes":{k:np.asarray(self.axes[k]).tolist() for k in ["origin","LR","AP","SI"]}, "field_shape_IJK3":list(self.fieldData.shape), "field_affine_RAS":self.fieldAffine.tolist(), "sides":{}}
         localPatchStats = {}
         for side in ["left", "right"]:
             upper = self.sideData[side]["t1Upper"]
@@ -569,7 +693,7 @@ class CBCTTMJAnalysisWidget(ScriptedLoadableModuleWidget):
             pts = vtk_to_numpy(upper.GetPoints().GetData()).astype(np.float64); rel = pts - pts.mean(axis=0)
             uRange = float((rel @ self.axes["LR"]).max() - (rel @ self.axes["LR"]).min())
             vRange = float((rel @ self.axes["AP"]).max() - (rel @ self.axes["AP"]).min())
-            report["sides"][side] = {"valid_ratio":float(valid.mean()), "mean_magnitude_mm":float(np.mean(np.linalg.norm(disp[good],axis=1))) if np.any(good) else None, "mean_LR_mm":float(np.mean(components["LR"][good])) if np.any(good) else None, "mean_AP_mm":float(np.mean(components["AP"][good])) if np.any(good) else None, "mean_SI_mm":float(np.mean(components["SI"][good])) if np.any(good) else None, "inverse_iterations":int(prepared[side]["inverseInfo"]["iterations"]), "inverse_converged":bool(prepared[side]["inverseInfo"]["converged_to_tolerance"])}
+            report["sides"][side] = {"valid_ratio":float(valid.mean()), "mean_magnitude_mm":float(np.mean(np.linalg.norm(disp[good],axis=1))) if np.any(good) else None, "mean_LR_mm":float(np.mean(components["LR"][good])) if np.any(good) else None, "mean_AP_mm":float(np.mean(components["AP"][good])) if np.any(good) else None, "mean_SI_mm":float(np.mean(components["SI"][good])) if np.any(good) else None}
             patchGood = patchValid & np.all(np.isfinite(patchDisp), axis=1)
             patchMag = np.linalg.norm(patchDisp[patchGood], axis=1) if np.any(patchGood) else np.array([])
             patchPts = vtk_to_numpy(patchBase.GetPoints().GetData()).astype(np.float64)
@@ -579,12 +703,15 @@ class CBCTTMJAnalysisWidget(ScriptedLoadableModuleWidget):
             localPatchStats[side] = {"side":side, "valid_ratio":float(patchValid.mean()), "patch_mean_magnitude_mm":float(np.mean(patchMag)) if len(patchMag) else None, "patch_mean_LR_mm":float(np.mean(patchComponents["LR"][patchGood])) if np.any(patchGood) else None, "patch_mean_AP_mm":float(np.mean(patchComponents["AP"][patchGood])) if np.any(patchGood) else None, "patch_mean_SI_mm":float(np.mean(patchComponents["SI"][patchGood])) if np.any(patchGood) else None, "patch_u_range_mm":patchURange, "patch_v_range_mm":patchVRange}
             t2Upper = self.sideData[side].get("t2Upper")
             if t2Upper is not None:
-                check = self.logic.fieldDirectionCheck(upper, t2Upper, self.fieldData, self.fieldAffine)
-                self.log("{} T2-rigid surface check (mean point-to-surface distance, mm): before={:.3f}, after field={:.3f}".format(side.upper(), check["before_mean_mm"], check["after_mean_mm"]))
-                report["sides"][side]["T2_surface_distance_before_mm"] = check["before_mean_mm"]
-                report["sides"][side]["T2_surface_distance_after_field_mm"] = check["after_mean_mm"]
-                if np.isfinite(check["before_mean_mm"]) and np.isfinite(check["after_mean_mm"]) and check["after_mean_mm"] > check["before_mean_mm"]:
-                    self.log("WARNING: applying the field did not reduce T2-rigid to T1 surface distance on {}. Verify field sign/direction.".format(side))
+                # Compare identical valid T1 source vertices before/after direct mapping.
+                before_mean = self.logic.meanDistance(points[valid], t2Upper) if np.any(valid) else float("nan")
+                after_mean = self.logic.meanDistance(mappedPoints[valid], t2Upper) if np.any(valid) else float("nan")
+                self.log("{} DIRECT T1->T2-rigid surface distance: before={:.3f}, after={:.3f} mm".format(
+                    side.upper(), before_mean, after_mean))
+                report["sides"][side]["T1_to_T2rigid_before_mm"] = before_mean
+                report["sides"][side]["T1_to_T2rigid_after_direct_mm"] = after_mean
+                if np.isfinite(before_mean) and np.isfinite(after_mean) and after_mean > before_mean:
+                    self.log("WARNING: direct mapping increased T1-to-T2-rigid surface distance on {}.".format(side))
             self.sideData[side].update(prepared[side])
         with open(os.path.join(self.outputDir, "surface_analysis_report.json"), "w", encoding="utf-8") as f: json.dump(report, f, indent=2)
         with open(os.path.join(self.outputDir, "local_patch_stats.json"), "w", encoding="utf-8") as f: json.dump(localPatchStats, f, indent=2)
@@ -600,7 +727,9 @@ class CBCTTMJAnalysisWidget(ScriptedLoadableModuleWidget):
         self.log("STEP 3 COMPLETE: LR/AP/SI heatmaps, T1-to-T2-rigid mapped surfaces, and directional patches are ready.")
         self.log("In the Slicer view, region fills are replaced by outlines to keep the displacement heatmap readable.")
         self.log("Direction values and patch display deformation are in mm; patch displacement is visually scaled by {:.3f}.".format(float(self.deformationScale.value)))
-        self.startHtmlExport(3)
+        html_outputs = self.exportDirectionalHtmlReports(vmax)
+        if len(html_outputs) != 3:
+            self.log("WARNING: Step 3 Slicer analysis completed, but some HTML exports failed. See HTML log above.")
 
     def addAndSaveModel(self, poly, name, color, opacity, filename):
         node = self.logic.addModel(poly, name, color, opacity); self.generatedModelNodes.append(node)
@@ -860,7 +989,8 @@ class CBCTTMJAnalysisLogic(ScriptedLoadableModuleLogic):
                 for z, idx in enumerate(ids): q.GetPointIds().SetId(z, int(idx))
                 cells.InsertNextCell(q)
         poly.SetPolys(cells)
-        disp, valid, info = self.inverseDisplacement(points, field, affine)
+        disp, valid = self.sampleField(points, field, affine)
+        valid &= np.all(np.isfinite(disp), axis=1)
         comps = {k:disp @ axes[k] for k in ["LR", "AP", "SI"]}
         comps["MAG"] = np.linalg.norm(disp, axis=1)
         return poly, disp, valid, comps
